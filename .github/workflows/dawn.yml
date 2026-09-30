@@ -1,0 +1,77 @@
+name: Dawn chorus report
+
+on:
+  schedule:
+    # GitHub runs on UTC. One of these lands at 8:05 UK time whatever the season;
+    # the check below skips the other.
+    - cron: "5 7 * * *"
+    - cron: "5 8 * * *"
+  workflow_dispatch:   # adds a "Run workflow" button for testing
+
+permissions:
+  contents: write      # to save each report into archive/
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Is it the 8am run in the UK?
+        id: time
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(TZ=Europe/London date +%H)" = "08" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not 8am in the UK, skipping this one."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.time.outputs.go == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.time.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Build the report
+        if: steps.time.outputs.go == 'true'
+        env:
+          TZ: Europe/London
+        run: |
+          python build_dawn.py
+          mkdir -p site archive
+          cp index.html "archive/$(date +%F).html"
+          mv index.html site/
+
+      - name: Save today's report to the archive
+        if: steps.time.outputs.go == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archive
+          git commit -m "Dawn chorus report for $(TZ=Europe/London date +%F)" || echo "Nothing new to save"
+          git push
+
+      - uses: actions/configure-pages@v5
+        if: steps.time.outputs.go == 'true'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.time.outputs.go == 'true'
+        with:
+          path: site
+
+      - name: Publish to GitHub Pages
+        id: deployment
+        if: steps.time.outputs.go == 'true'
+        uses: actions/deploy-pages@v4
