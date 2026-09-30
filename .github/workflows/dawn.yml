@@ -1,12 +1,20 @@
-name: Dawn chorus report
+name: Bird display
 
 on:
   schedule:
-    # GitHub runs on UTC. One of these lands at 8:05 UK time whatever the season;
-    # the check below skips the other.
-    - cron: "5 7 * * *"
-    - cron: "5 8 * * *"
-  workflow_dispatch:   # adds a "Run workflow" button for testing
+    # GitHub runs on UTC. Two runs per report so one always lands at
+    # 7:45 / 19:45 UK time whatever the season; the check below skips the other.
+    - cron: "45 6 * * *"
+    - cron: "45 7 * * *"
+    - cron: "45 18 * * *"
+    - cron: "45 19 * * *"
+  workflow_dispatch:
+    inputs:
+      report:
+        description: "Which report to build"
+        type: choice
+        options: [dawn, evening]
+        default: dawn
 
 permissions:
   contents: write      # to save each report into archive/
@@ -24,54 +32,75 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Is it the 8am run in the UK?
-        id: time
+      - name: Which report is due?
+        id: pick
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "go=true" >> "$GITHUB_OUTPUT"
-          elif [ "$(TZ=Europe/London date +%H)" = "08" ]; then
-            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "report=${{ inputs.report }}" >> "$GITHUB_OUTPUT"
           else
-            echo "Not 8am in the UK, skipping this one."
-            echo "go=false" >> "$GITHUB_OUTPUT"
+            # Match on which schedule fired (not the clock), so a late start still counts.
+            fired="${{ github.event.schedule }}"
+            if [ "$(TZ=Europe/London date +%z)" = "+0100" ]; then
+              dawn="45 6 * * *"; evening="45 18 * * *"      # summer time
+            else
+              dawn="45 7 * * *"; evening="45 19 * * *"      # winter time
+            fi
+            if [ "$fired" = "$dawn" ]; then
+              echo "report=dawn" >> "$GITHUB_OUTPUT"
+            elif [ "$fired" = "$evening" ]; then
+              echo "report=evening" >> "$GITHUB_OUTPUT"
+            else
+              echo "Schedule '$fired' isn't the one for this time of year. Skipping."
+              echo "report=none" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
-      - uses: actions/checkout@v4
-        if: steps.time.outputs.go == 'true'
+      - uses: actions/checkout@v5
+        if: steps.pick.outputs.report != 'none'
 
-      - uses: actions/setup-python@v5
-        if: steps.time.outputs.go == 'true'
+      - uses: actions/setup-python@v6
+        if: steps.pick.outputs.report != 'none'
         with:
           python-version: "3.12"
 
-      - name: Build the report
-        if: steps.time.outputs.go == 'true'
+      - name: Build the dawn chorus
+        if: steps.pick.outputs.report == 'dawn'
+        env:
+          TZ: Europe/London
+        run: python build_dawn.py
+
+      - name: Build today's voices
+        if: steps.pick.outputs.report == 'evening'
         env:
           TZ: Europe/London
         run: |
-          python build_dawn.py
-          mkdir -p site archive
-          cp index.html "archive/$(date +%F).html"
-          mv index.html site/
+          pip install numpy soundfile
+          python build_evening.py
 
-      - name: Save today's report to the archive
-        if: steps.time.outputs.go == 'true'
+      - name: Save to the archive and get the page ready
+        if: steps.pick.outputs.report != 'none'
+        env:
+          TZ: Europe/London
         run: |
+          mkdir -p site archive
+          cp index.html "archive/$(date +%F)-${{ steps.pick.outputs.report }}.html"
+          mv index.html site/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add archive
-          git commit -m "Dawn chorus report for $(TZ=Europe/London date +%F)" || echo "Nothing new to save"
+          git commit -m "${{ steps.pick.outputs.report }} report for $(date +%F)" || echo "Nothing new to save"
+          git pull --rebase
           git push
 
       - uses: actions/configure-pages@v5
-        if: steps.time.outputs.go == 'true'
+        if: steps.pick.outputs.report != 'none'
 
-      - uses: actions/upload-pages-artifact@v3
-        if: steps.time.outputs.go == 'true'
+      - uses: actions/upload-pages-artifact@v4
+        if: steps.pick.outputs.report != 'none'
         with:
           path: site
 
       - name: Publish to GitHub Pages
         id: deployment
-        if: steps.time.outputs.go == 'true'
+        if: steps.pick.outputs.report != 'none'
         uses: actions/deploy-pages@v4
