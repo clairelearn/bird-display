@@ -1,13 +1,7 @@
 name: Bird display
 
 on:
-  schedule:
-    # GitHub runs on UTC. Two runs per report so one always lands at
-    # 7:45 / 19:45 UK time whatever the season; the check below skips the other.
-    - cron: "45 6 * * *"
-    - cron: "45 7 * * *"
-    - cron: "45 18 * * *"
-    - cron: "45 19 * * *"
+  # Runs are started by cron-job.org at 7:45 (dawn) and 19:45 (evening) UK time.
   workflow_dispatch:
     inputs:
       report:
@@ -15,6 +9,10 @@ on:
         type: choice
         options: [dawn, evening]
         default: dawn
+      date:
+        description: "Day to report on, like 2026-09-30 (leave blank for today)"
+        type: string
+        required: false
 
 permissions:
   contents: write      # to save each report into archive/
@@ -35,25 +33,7 @@ jobs:
       - name: Which report is due?
         id: pick
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "report=${{ inputs.report }}" >> "$GITHUB_OUTPUT"
-          else
-            # Match on which schedule fired (not the clock), so a late start still counts.
-            fired="${{ github.event.schedule }}"
-            if [ "$(TZ=Europe/London date +%z)" = "+0100" ]; then
-              dawn="45 6 * * *"; evening="45 18 * * *"      # summer time
-            else
-              dawn="45 7 * * *"; evening="45 19 * * *"      # winter time
-            fi
-            if [ "$fired" = "$dawn" ]; then
-              echo "report=dawn" >> "$GITHUB_OUTPUT"
-            elif [ "$fired" = "$evening" ]; then
-              echo "report=evening" >> "$GITHUB_OUTPUT"
-            else
-              echo "Schedule '$fired' isn't the one for this time of year. Skipping."
-              echo "report=none" >> "$GITHUB_OUTPUT"
-            fi
-          fi
+          echo "report=${{ inputs.report }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
         if: steps.pick.outputs.report != 'none'
@@ -67,7 +47,7 @@ jobs:
         if: steps.pick.outputs.report == 'dawn'
         env:
           TZ: Europe/London
-        run: python build_dawn.py
+        run: python build_dawn.py ${{ inputs.date && format('--date {0}', inputs.date) || '' }}
 
       - name: Build today's voices
         if: steps.pick.outputs.report == 'evening'
@@ -75,7 +55,7 @@ jobs:
           TZ: Europe/London
         run: |
           pip install numpy soundfile
-          python build_evening.py
+          python build_evening.py ${{ inputs.date && format('--date {0}', inputs.date) || '' }}
 
       - name: Save to the archive and get the page ready
         if: steps.pick.outputs.report != 'none'
@@ -83,12 +63,14 @@ jobs:
           TZ: Europe/London
         run: |
           mkdir -p site archive
-          cp index.html "archive/$(date +%F)-${{ steps.pick.outputs.report }}.html"
+          day="${{ inputs.date }}"
+          day="${day:-$(date +%F)}"
+          cp index.html "archive/${day}-${{ steps.pick.outputs.report }}.html"
           mv index.html site/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add archive
-          git commit -m "${{ steps.pick.outputs.report }} report for $(date +%F)" || echo "Nothing new to save"
+          git commit -m "${{ steps.pick.outputs.report }} report for ${day}" || echo "Nothing new to save"
           git pull --rebase
           git push
 
